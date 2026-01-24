@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="dlq-detail">
+    <div class="header-actions"
+        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h2>Failed DB Insert Job</h2>
+        <div class="action-buttons">
+            <a href="{{ url_for('index') }}" class="btn btn-secondary"
+                style="text-decoration: none; margin-right: 10px;">Back to Dashboard</a>
+            <a href="{{ url_for('dlq_insert') }}" class="btn btn-primary-alt" style="text-decoration: none;">🔄
+                Refresh</a>
+        </div>
+    </div>
+
+    {% if item %}
+    <div class="detail-container">
+        <!-- Pagination Controls Top -->
+        <div class="pagination-controls"
+            style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <div class="page-info">
+                Item <span class="highlight">{{ page }}</span> of <span class="highlight">{{ total_items }}</span>
+            </div>
+            <div class="nav-buttons">
+                {% if page > 1 %}
+                <a href="{{ url_for('dlq_insert', page=page-1) }}" class="btn btn-secondary small">&laquo; Previous</a>
+                {% else %}
+                <button class="btn btn-secondary small" disabled>&laquo; Previous</button>
+                {% endif %}
+
+                {% if page < total_pages %} <a href="{{ url_for('dlq_insert', page=page+1) }}"
+                    class="btn btn-secondary small">Next &raquo;</a>
+                    {% else %}
+                    <button class="btn btn-secondary small" disabled>Next &raquo;</button>
+                    {% endif %}
+            </div>
+        </div>
+
+        <div class="data-display">
+            <table class="detail-table">
+                <thead>
+                    <tr>
+                        <th style="width: 200px;">Key</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key, value in item.items() %}
+                    <tr>
+                        <td class="key-cell">{{ key }}</td>
+                        <td class="value-cell">
+                            {% if key == 'url' or key.endswith('_url') %}
+                            <a href="{{ value }}" target="_blank" class="link">{{ value }}</a>
+                            {% else %}
+                            <pre
+                                class="json-value">{{ value | tojson(indent=2) if value is iterable and value is not string else value }}</pre>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination Controls Bottom -->
+        <div class="pagination-controls" style="display: flex; justify-content: center; margin-top: 20px;">
+            <!-- Simplified bottom nav -->
+            <div class="nav-buttons">
+                {% for p in range(1, total_pages + 1) %}
+                <!-- Show limited page numbers around current page -->
+                {% if p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %} <a
+                    href="{{ url_for('dlq_insert', page=p) }}" class="page-link {% if p == page %}active{% endif %}"
+                    style="margin: 0 4px;">{{ p }}</a>
+                    {% elif p == page - 3 or p == page + 3 %}
+                    <span class="page-dots">...</span>
+                    {% endif %}
+                    {% endfor %}
+            </div>
+        </div>
+
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>No failed insert jobs found! 🎉</p>
+    </div>
+    {% endif %}
+</section>
+
+<style>
+    .detail-container {
+        background: #1e1e1e;
+        padding: 20px;
+        border-radius: 8px;
+    }
+
+    .detail-table {
+        width: 100%;
+        border-collapse: collapse;
+        color: #ffffff;
+    }
+
+    .detail-table th,
+    .detail-table td {
+        padding: 12px;
+        border-bottom: 1px solid #333;
+        text-align: left;
+        vertical-align: top;
+    }
+
+    .detail-table th {
+        background-color: #2d2d2d;
+        color: #fff;
+    }
+
+    .key-cell {
+        font-weight: bold;
+        color: #88c0d0;
+    }
+
+    .value-cell {
+        word-break: break-all;
+    }
+
+    .json-value {
+        margin: 0;
+        white-space: pre-wrap;
+        font-family: monospace;
+        color: #a3be8c;
+    }
+
+    .link {
+        color: #4da6ff;
+        text-decoration: none;
+    }
+
+    .link:hover {
+        text-decoration: underline;
+    }
+
+    .highlight {
+        color: #ebcb8b;
+        font-weight: bold;
+    }
+
+    .btn.small {
+        padding: 6px 12px;
+        font-size: 0.9em;
+    }
+
+    .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .page-link {
+        padding: 6px 12px;
+        background: #2d2d2d;
+        color: #fff;
+        border-radius: 4px;
+        text-decoration: none;
+    }
+
+    .page-link:hover {
+        background: #3d3d3d;
+    }
+
+    .page-link.active {
+        background: #4da6ff;
+        color: white;
+    }
+
+    .page-info {
+        color: #ffffff;
+    }
+    
+    .page-dots {
+        color: #ffffff;
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 40px;
+        color: #888;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 20px;
+    }
+</style>
+{% endblock %}

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Steam-Spider Monitor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <header>
+        <h1>Steam-Spider Monitor</h1>
+        <nav>
+            <a href="/">Dashboard</a>
+        </nav>
+    </header>
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer>
+        <p>Last updated: <span id="last-update">--</span></p>
+    </footer>
+
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

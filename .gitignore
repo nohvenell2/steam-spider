@@ -29,7 +29,8 @@ blueprint*
 
 # test
 test/
-temp*
+temp/
+temp*.py
 test_redis_tls.py
 
 # README

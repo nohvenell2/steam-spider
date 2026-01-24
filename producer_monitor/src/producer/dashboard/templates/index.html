@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<section class="queues">
+    <h2>Queue Status</h2>
+    <div class="queue-cards">
+        <div class="card">
+            <h3>Work Queue</h3>
+            <p class="big-number" id="queue-work">0</p>
+            <p class="label">Jobs waiting</p>
+        </div>
+        <div class="card">
+            <h3>Processing</h3>
+            <p class="big-number" id="queue-processing">0</p>
+            <p class="label">Currently processing</p>
+        </div>
+        <div class="card">
+            <h3>Result Queue</h3>
+            <p class="big-number" id="queue-result">0</p>
+            <p class="label">Waiting for DB Writer</p>
+        </div>
+        <div class="card">
+            <h3>Saving Queue</h3>
+            <p class="big-number" id="queue-saving">0</p>
+            <p class="label">Currently saving</p>
+        </div>
+        <div class="card">
+            <h3>Updated Games</h3>
+            <p class="big-number" id="updated-games">0</p>
+            <p class="label">Update done</p>
+        </div>
+        <div class="card alert" onclick="window.location.href='{{ url_for('dlq_crawling') }}'" style="cursor: pointer;">
+            <h3>Worker Failed</h3>
+            <p class="big-number" id="dlq-crawling">0</p>
+            <p class="label">Crawling failed</p>
+        </div>
+        <div class="card alert" onclick="window.location.href='{{ url_for('dlq_insert') }}'" style="cursor: pointer;">
+            <h3>Writer Failed</h3>
+            <p class="big-number" id="dlq-saving">0</p>
+            <p class="label">DB Inserting failed</p>
+        </div>
+    </div>
+</section>
+
+<section class="progress">
+    <h2>Progress</h2>
+    <div class="progress-container">
+        <div class="progress-stats">
+            <p><strong>Total:</strong> <span id="progress-total">0</span></p>
+            <p><strong>Completed:</strong> <span id="progress-completed">0</span></p>
+            <p><strong>Remaining:</strong> <span id="progress-remaining">0</span></p>
+        </div>
+        <div class="progress-bar-container">
+            <div class="progress-bar" id="progress-bar" style="width: 0%"></div>
+        </div>
+        <p class="progress-percent"><span id="progress-percent">0.00</span>%</p>
+    </div>
+</section>
+
+<section class="admin-controls">
+    <h2>Admin Controls</h2>
+
+    <!-- Job Management Section -->
+    <div class="admin-section">
+        <h3>Job Management</h3>
+        <p class="info-text">Re-queue failed jobs back to work queue.</p>
+        <div class="admin-buttons">
+            <button class="btn btn-primary" onclick="retryFailedJobs()">Retry Failed Jobs</button>
+            <button class="btn btn-primary" onclick="retryProcessingJobs()">Retry Processing Jobs</button>
+        </div>
+    </div>
+
+    <!-- Reset Section -->
+    <div class="admin-section">
+        <h3>System Reset</h3>
+        <p class="warning-text">⚠️ These operations are irreversible and will delete data</p>
+        <div class="admin-buttons">
+            <button class="btn btn-danger" onclick="showResetModal('redis')">Reset Redis</button>
+            <button class="btn btn-danger" onclick="showResetModal('database')">Reset Database</button>
+            <button class="btn btn-danger-alt" onclick="showResetModal('all')">Reset All</button>
+        </div>
+    </div>
+
+    <!-- Producer Section -->
+    <div class="admin-section">
+        <h3>Producer Control</h3>
+        <div class="producer-status">
+            <span id="producer-status-badge" class="badge">Checking...</span>
+            <span id="producer-details"></span>
+        </div>
+        <div class="admin-buttons">
+            <button class="btn btn-primary" onclick="showProducerModal('production')" id="btn-producer-prod">
+                Start Producer (Production)
+            </button>
+            <button class="btn btn-primary-alt" onclick="showProducerModal('test')" id="btn-producer-test">
+                Start Producer (Test)
+            </button>
+        </div>
+    </div>
+</section>
+
+<section class="database">
+    <h2>Database Status</h2>
+    <div class="db-status">
+        <p><strong>Connection:</strong> <span id="db-status" class="badge">Checking...</span></p>
+        <p><strong>Version:</strong> <span id="db-version">--</span></p>
+        <div id="db-tables"></div>
+    </div>
+</section>
+
+<!-- Reset Confirmation Modal -->
+<div id="reset-modal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeResetModal()">&times;</span>
+        <h2>Confirm System Reset</h2>
+
+        <div class="modal-body">
+            <p class="modal-warning">
+                ⚠️ You are about to <strong id="reset-action-text"></strong>.
+            </p>
+            <p>This operation cannot be undone.</p>
+
+            <div class="confirmation-input">
+                <label for="confirmation-phrase">
+                    Type <code>DELETE ALL DATA</code> to confirm:
+                </label>
+                <input type="text" id="confirmation-phrase" placeholder="DELETE ALL DATA" autocomplete="off">
+            </div>
+
+            <div id="reset-error" class="error-message"></div>
+        </div>
+
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeResetModal()">Cancel</button>
+            <button class="btn btn-danger" onclick="executeReset()" id="btn-confirm-reset">Confirm Reset</button>
+        </div>
+    </div>
+</div>
+
+<!-- Producer Start Modal -->
+<div id="producer-modal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeProducerModal()">&times;</span>
+        <h2>Start Producer</h2>
+
+        <div class="modal-body">
+            <p>Mode: <strong id="producer-mode-text"></strong></p>
+
+            <div id="sample-count-input" style="display: none;">
+                <label for="sample-count">Number of samples (1-10000):</label>
+                <input type="number" id="sample-count" min="1" max="10000" value="100">
+            </div>
+
+            <!-- Reset before start options -->
+            <div class="checkbox-group">
+                <label>
+                    <input type="checkbox" id="reset-redis-before-start" checked>
+                    Reset Redis before start (clear queues)
+                </label>
+            </div>
+            <div class="checkbox-group">
+                <label>
+                    <input type="checkbox" id="reset-db-before-start">
+                    Reset database before start (irreversible and will delete all data)
+                </label>
+            </div>
+
+            <p class="info-text">
+                The producer will run in the background. You can close this dashboard without interrupting it.
+            </p>
+
+            <div id="producer-error" class="error-message"></div>
+        </div>
+
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeProducerModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="executeProducerStart()" id="btn-start-producer">Start
+                Producer</button>
+        </div>
+    </div>
+</div>
+
+<!-- Producer Reset Confirmation Modal -->
+<div id="producer-reset-confirm-modal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeProducerResetConfirmModal()">&times;</span>
+        <h2>Confirm Reset Before Producer Start</h2>
+
+        <div class="modal-body">
+            <p class="modal-warning">
+                ⚠️ This will delete all existing data before starting Producer.
+            </p>
+
+            <div class="confirmation-input">
+                <label for="producer-reset-phrase">
+                    Type <code>DELETE ALL DATA</code> to confirm:
+                </label>
+                <input type="text" id="producer-reset-phrase" placeholder="DELETE ALL DATA" autocomplete="off">
+            </div>
+
+            <div id="producer-reset-error" class="error-message"></div>
+        </div>
+
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeProducerResetConfirmModal()">Cancel</button>
+            <button class="btn btn-danger" onclick="confirmProducerReset()" id="btn-confirm-producer-reset">Confirm and
+                Start</button>
+        </div>
+    </div>
+</div>
+
+<!-- Retry Confirmation Modal -->
+<div id="retry-modal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeRetryModal()">&times;</span>
+        <h2>Confirm Retry</h2>
+
+        <div class="modal-body">
+            <p>Are you sure you want to retry all failed jobs?</p>
+            <div id="retry-error" class="error-message"></div>
+        </div>
+
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeRetryModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="executeRetryJobs()" id="btn-confirm-retry">Confirm</button>
+        </div>
+    </div>
+</div>
+
+<!-- Retry Processing Confirmation Modal -->
+<div id="retry-processing-modal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeRetryProcessingModal()">&times;</span>
+        <h2>Confirm Retry Processing Jobs</h2>
+
+        <div class="modal-body">
+            <p>Are you sure you want to retry all jobs from processing and saving queues?</p>
+            <p class="info-text">This will move jobs back to the work queue with retry_count reset to 0.</p>
+            <div id="retry-processing-error" class="error-message"></div>
+        </div>
+
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeRetryProcessingModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="executeRetryProcessingJobs()" id="btn-confirm-retry-processing">Confirm</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script>
+    const dashboard = new Dashboard({{ refresh_interval }});
+    dashboard.start();
+</script>
+{% endblock %}
