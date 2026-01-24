@@ -38,3 +38,6 @@ README-*.md
 
 # claude
 .claude/
+
+# certs
+generate-certs.sh
