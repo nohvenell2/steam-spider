@@ -1,0 +1,199 @@
+version: '3.8'
+
+services:
+  # ============================================
+  # PostgreSQL Database
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_BIND_IP}:${POSTGRES_PORT}:5432"
+    volumes:
+      - steam_spider_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - steam-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+  # ============================================
+  # Redis Cache & Queue
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "${REDIS_BIND_IP}:${REDIS_PORT}:6379"
+    volumes:
+      - steam_spider_redis_data:/data
+      - ./redis_config/users.acl:/etc/redis/users.acl
+    command: redis-server --appendonly yes --aclfile /etc/redis/users.acl
+    healthcheck:
+      test: ["CMD", "redis-cli", "-u", "redis://${REDIS_ID_HEALTH_CHECKER}:${REDIS_PW_HEALTH_CHECKER}@${REDIS_HOST}:6379", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - steam-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+  # ============================================
+  # Database Initialization
+  # ============================================
+  db-init:
+    build:
+      context: ./database
+      dockerfile: Dockerfile
+    container_name: db-init
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - steam-network
+    restart: "no"
+
+  # ============================================
+  # DB Writer Service
+  # ============================================
+  dbwriter:
+    build:
+      context: ./dbwriter
+      dockerfile: Dockerfile
+    container_name: dbwriter
+    stop_grace_period: 60s
+    environment:
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: ${REDIS_DB}
+      REDIS_ID_DBWRITER: ${REDIS_ID_DBWRITER}
+      REDIS_PW_DBWRITER: ${REDIS_PW_DBWRITER}
+      # Postgres
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Settings
+      BUFFER_SIZE: ${BUFFER_SIZE}
+      BUFFER_TIMEOUT: ${BUFFER_TIMEOUT}
+      MAX_DB_RETRIES: ${MAX_DB_RETRIES}
+      RETRY_BASE_DELAY: ${RETRY_BASE_DELAY}
+      RETRY_MAX_DELAY: ${RETRY_MAX_DELAY}
+      LOG_LEVEL: ${LOG_LEVEL}
+      DB_ECHO: ${DB_ECHO}
+    volumes:
+      - ./dbwriter/logs:/app/logs
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks:
+      - steam-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  # ============================================
+  # Producer & Monitor Dashboard
+  # ============================================
+  producer-monitor:
+    build:
+      context: ./producer_monitor
+      dockerfile: Dockerfile
+    container_name: producer-monitor
+    ports:
+      - "${DASHBOARD_BIND_IP}:${DASHBOARD_PORT}:5000"
+    environment:
+      # Steam API
+      STEAM_API_KEY: ${STEAM_API_KEY}
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: ${REDIS_DB}
+      REDIS_ID_PRODUCER_MONITOR: ${REDIS_ID_PRODUCER_MONITOR}
+      REDIS_PW_PRODUCER_MONITOR: ${REDIS_PW_PRODUCER_MONITOR}
+      # Postgres
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Dashboard
+      DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PORT: 5000
+      # Settings
+      REFRESH_INTERVAL: ${REFRESH_INTERVAL}
+      REFRESH_INTERVAL_LONG: ${REFRESH_INTERVAL_LONG}
+      PRODUCER_LOCK_TTL: ${PRODUCER_LOCK_TTL}
+      RATE_LIMIT_RESET_COUNT: ${RATE_LIMIT_RESET_COUNT}
+      RATE_LIMIT_RESET_WINDOW: ${RATE_LIMIT_RESET_WINDOW}
+      RATE_LIMIT_PRODUCER_COUNT: ${RATE_LIMIT_PRODUCER_COUNT}
+      RATE_LIMIT_PRODUCER_WINDOW: ${RATE_LIMIT_PRODUCER_WINDOW}
+      LOG_LEVEL: ${LOG_LEVEL}
+      DB_ECHO: ${DB_ECHO}
+    volumes:
+      - ./producer_monitor/logs:/app/logs
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks:
+      - steam-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    command: ["python", "-m", "producer.dashboard.app"]
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  steam_spider_postgres_data:
+    driver: local
+  steam_spider_redis_data:
+    driver: local
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  steam-network:
+    driver: bridge

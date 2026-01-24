@@ -1,0 +1,59 @@
+# redis key 관련 오류 발생시 주석은 모두 삭제할것
+# ============================================================
+# 1. 관리자 (Super Admin)
+# - 역할 : 관리자. 유지보수 및 비상 대응용.
+# - 권한 : 모든 권한
+# - default id 비활성화
+# - .env의 REDIS_ID_ADMIN 값과 똑같은 아이디를 아래에 적으세요.
+# - .env의 REDIS_PW_ADMIN 값을 SHA256 해싱한 값을 '#' 뒤에 적으세요.
+# ============================================================
+user default off
+user {username} on #{password_hashing_val} ~* +@all
+
+# ============================================================
+# 2. 크롤링 봇 (Worker) - 외부 기기
+# - 역할: Job 을 받아와서 결과를 큐에 저장.
+# - 접근: queue:work, queue:processing, queue:result, dlq:crawling
+# - 권한:
+#   1. +BRPOPLPUSH : 대기하다가 작업을 가져오면서 동시에 처리 중 목록으로 이동
+#   2. +LPUSH      : 결과 데이터를 결과 큐에 저장
+#   3. +LREM       : 처리가 끝난 작업을 처리 중 목록에서 삭제
+#   4. +PING       : 연결 확인용
+# ============================================================
+user {username} on >{password} ~queue:* ~dlq:* +BRPOPLPUSH +LPUSH +RPUSH +LREM +PING
+
+# ============================================================
+# 3. DB Writer (Consumer) - 내부 DB 저장용
+# - 역할: 크롤링된 결과 큐를 읽어서 PostgreSQL에 저장.
+# - 접근: queue:result, queue:saving. dlq:db_insert
+# - 권한:
+#   +BRPOPLPUSH : result에서 꺼내서 saving으로 이동
+#   +LREM       : DB 저장 성공 시 saving에서 제거 (또는 실패 후 이동 시 제거)
+#   +RPUSH      : DB 저장 실패 시 dlq로 이동
+#   +PING       : 연결 확인
+#   +MULTI, +EXEC, +DISCARD: 파이프라인(Pipeline) 사용 필수
+# ============================================================
+user {username} on >{password} ~queue:result ~queue:* ~dlq:* +BRPOPLPUSH +LPUSH +RPUSH +LREM +PING +MULTI +EXEC +DISCARD
+
+# ============================================================
+# 4. 프로듀서 & 모니터 (Producer & Monitor) - 내부/웹서버
+# - 역할: 작업 생성 및 모니터링용
+# - 접근: lock:producer, stats:*, queue:*, dlq:*
+# - 권한:
+#   +SET, +GET, +DEL, +TTL : 상태(lock/stats) 관리 및 큐 삭제용
+#   +LLEN, +LRANGE         : 대시보드 모니터링용 (길이/내용 조회)
+#   +LPUSH, +RPOP          : 작업 생성 및 테스트용
+#   +MULTI, +EXEC, +DISCARD: 파이프라인(Pipeline) 사용 필수
+#   +INCRBY +INCR +EXPIRE  : Producer Start, Reset 기능 제한용
+# ============================================================
+user {username} on >{password} ~lock:producer ~stats:* ~queue:* ~dlq:* ~ratelimit:* +SET +GET +DEL +TTL +LLEN +LRANGE +LPUSH +RPOP +PING +MULTI +EXEC +DISCARD +QUIT +INCRBY +INCR +EXPIRE
+
+# ============================================================
+# 5. Health Checker - 내부
+# - 역할: 헬스체크 전용 유저
+# - 권한: PING 명령어만 사용 가능
+# - 접근: 아무런 키도 접근 불가
+# - .env의 REDIS_ID_HEALTH_CHECKER 값과 똑같은 아이디를 적으세요.
+# - .env의 REDIS_PW_HEALTH_CHECKER 값과 똑같은 평문 비번을 '>' 뒤에 적으세요.
+# ============================================================
+user {username} on >{password} ~* -@all +PING

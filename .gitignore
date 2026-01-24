@@ -1,0 +1,39 @@
+# Environment files
+.env
+*.pem
+users.acl
+
+# Worker (separate repository)
+worker/
+
+# Producer (not using)
+producer/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# etc
+blueprint*
+
+# test
+test/
+temp*
+test_redis_tls.py
+
+# README
+README-*.md

@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  # DB Writer Service
+  dbwriter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: steam-dbwriter-standalone
+    stop_grace_period: 60s
+    environment:
+      # Override for Docker networking (호스트 DB 사용 시)
+      # Docker Desktop (Windows/Mac): host.docker.internal 사용
+      REDIS_HOST: host.docker.internal
+    volumes:
+      - ./logs:/app/logs
+    network_mode: host
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M

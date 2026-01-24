@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  # Producer & Monitor Dashboard
+  producer-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: steam-producer-monitor
+    restart: "no"
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      # Override for Docker networking (호스트 DB 사용 시)
+      # Docker Desktop (Windows/Mac): host.docker.internal 사용
+      REDIS_HOST: host.docker.internal
+      POSTGRES_HOST: host.docker.internal
+      DASHBOARD_HOST: 0.0.0.0
+
+      # Linux Native Docker 사용 시 아래 주석 해제 (network_mode: host 필요)
+      # REDIS_HOST: localhost
+      # POSTGRES_HOST: localhost
+
+    # Docker Desktop (Windows/Mac) - host.docker.internal 지원
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # Linux Native Docker - 호스트 네트워크 사용 시 아래 주석 해제 (extra_hosts 삭제)
+    # network_mode: host
+
+    # Health check (lightweight endpoint)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Default command: run dashboard
+    command: ["python", "-m", "producer.dashboard.app"]
+
+    # Optional: mount logs directory
+    volumes:
+      - ./logs:/app/logs
+
+# 동일 네트워크에서 Redis/PostgreSQL 컨테이너 사용 시 아래 주석 해제
+# networks:
+#   - steam-network
+
+# networks:
+#   steam-network:
+#     external: true  # 기존 네트워크 사용
+#     # OR
+#     # driver: bridge  # 새 네트워크 생성

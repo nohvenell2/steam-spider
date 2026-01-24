@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: steam-spider-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_BIND_IP}:${POSTGRES_PORT}:5432"
+    volumes:
+      - steam_spider_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "${REDIS_BIND_IP}:${REDIS_PORT}:6379"
+    volumes:
+      - steam_spider_redis_data:/data
+      - ./redis_config/users.acl:/etc/redis/users.acl
+    command: redis-server --appendonly yes --aclfile /etc/redis/users.acl
+    healthcheck:
+      test: ["CMD", "redis-cli", "-u", "redis://${REDIS_ID_HEALTH_CHECKER}:${REDIS_PW_HEALTH_CHECKER}@${REDIS_HOST}:6379", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  db-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: steam-spider-db-init
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  steam_spider_postgres_data:
+    driver: local
+  steam_spider_redis_data:
+    driver: local
