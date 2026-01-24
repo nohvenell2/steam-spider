@@ -24,9 +24,6 @@ RUN apt-get update && \
     libpq5 && \
     rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN useradd -m -u 1000 dbwriter
-
 # Set working directory
 WORKDIR /app
 
@@ -35,16 +32,10 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code
-COPY --chown=dbwriter:dbwriter src/ ./src/
-
-# Create logs directory with proper ownership (after COPY to prevent overwrite)
-RUN mkdir -p /app/logs && chown -R dbwriter:dbwriter /app/logs
+COPY src/ ./src/
 
 # Set Python path to include src directory
 ENV PYTHONPATH=/app/src
-
-# Switch to non-root user
-USER dbwriter
 
 # Run the application
 CMD ["python", "-m", "dbwriter.main"]
