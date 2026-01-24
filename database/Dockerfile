@@ -1,21 +1,5 @@
 # ============================================
-# Stage 1: Builder - Install dependencies
-# ============================================
-FROM python:3.11-slim AS builder
-
-WORKDIR /app
-
-# Install Poetry and export plugin
-RUN pip install --no-cache-dir poetry poetry-plugin-export
-
-# Copy dependency files
-COPY pyproject.toml poetry.lock ./
-
-# Export dependencies to requirements.txt
-RUN poetry export -f requirements.txt --output requirements.txt --without-hashes
-
-# ============================================
-# Stage 2: Runtime - Minimal final image
+# Single stage - Minimal runtime image
 # ============================================
 FROM python:3.11-slim
 
@@ -26,10 +10,8 @@ RUN apt-get update && apt-get install -y \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements from builder
-COPY --from=builder /app/requirements.txt .
-
-# Install Python packages (no build tools needed)
+# Copy requirements and install Python packages
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy only necessary application files

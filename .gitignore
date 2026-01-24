@@ -34,3 +34,6 @@ test_redis_tls.py
 
 # README
 README-*.md
+
+# claude
+.claude/
