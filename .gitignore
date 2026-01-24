@@ -6,9 +6,6 @@ users.acl
 # Worker (separate repository)
 worker/
 
-# Producer (not using)
-producer/
-
 # Python
 __pycache__/
 *.py[cod]
