@@ -18,10 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Production stage
 FROM python:3.11-slim
 
-# Install system dependencies for PostgreSQL
+# Install system dependencies for PostgreSQL and pg_dump/psql for DB cloning
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     libpq5 \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

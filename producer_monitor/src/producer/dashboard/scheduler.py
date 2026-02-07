@@ -1,5 +1,7 @@
 """Automation scheduler for continuous crawling cycles."""
 
+import os
+import subprocess
 import threading
 import time
 import logging
@@ -52,7 +54,7 @@ class AutomationScheduler:
     Automation scheduler that runs a continuous cycle:
     1. Wait for all jobs to complete
     2. Retry failed/processing jobs, wait again
-    3. Clone database (TEMPLATE approach with Redis lock)
+    3. Clone database (pg_dump|psql approach with Redis lock)
     4. Reset Redis, start new producer
     5. Repeat
     """
@@ -93,6 +95,9 @@ class AutomationScheduler:
         self._cycle_count = 0
         self._last_state_change: Optional[float] = None
         self._last_error: Optional[str] = None
+
+        if self._clone_db_name:
+            self._verify_pg_tools()
 
     def start(self) -> bool:
         """Start the scheduler. Returns False if already running."""
@@ -290,8 +295,25 @@ class AutomationScheduler:
                 self._transition(SchedulerState.ERROR)
                 self._running = False
 
+    def _verify_pg_tools(self) -> None:
+        """Verify pg_dump and psql are available on PATH."""
+        for tool in ("pg_dump", "psql"):
+            try:
+                result = subprocess.run(
+                    [tool, "--version"],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(f"{tool} --version failed: {result.stderr}")
+                logger.info(f"[Scheduler] Found {tool}: {result.stdout.strip()}")
+            except FileNotFoundError:
+                raise RuntimeError(
+                    f"{tool} not found on PATH. "
+                    "Install postgresql-client in the Docker image."
+                )
+
     def _clone_database(self) -> None:
-        """Clone the database using CREATE DATABASE ... TEMPLATE."""
+        """Clone the database using pg_dump piped to psql."""
         clone_name = self._clone_db_name
         if not clone_name:
             logger.info("[Scheduler] No clone_db_name configured, skipping clone")
@@ -336,28 +358,128 @@ class AutomationScheduler:
                 f"@{self._db_host}:{self._db_port}/postgres"
             )
 
+            # Phase 1: Drop and recreate empty clone DB
             engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
             try:
                 with engine.connect() as conn:
-                    # Drop existing clone if it exists
-                    conn.execute(text(f"DROP DATABASE IF EXISTS {clone_name}"))
-                    logger.info(f"[Scheduler] Dropped existing clone DB '{clone_name}' (if any)")
-
-                    # Terminate other connections to source DB
+                    # Terminate connections to clone DB only (NOT source)
                     conn.execute(text(
                         "SELECT pg_terminate_backend(pid) "
                         "FROM pg_stat_activity "
                         "WHERE datname = :db_name AND pid <> pg_backend_pid()"
-                    ), {"db_name": source_db_name})
-                    logger.info(f"[Scheduler] Terminated connections to '{source_db_name}'")
+                    ), {"db_name": clone_name})
 
-                    # Create clone via TEMPLATE
-                    conn.execute(text(
-                        f"CREATE DATABASE {clone_name} TEMPLATE {source_db_name}"
-                    ))
-                    logger.info(f"[Scheduler] Cloned '{source_db_name}' -> '{clone_name}' via TEMPLATE")
+                    conn.execute(text(f"DROP DATABASE IF EXISTS {clone_name}"))
+                    logger.info(f"[Scheduler] Dropped existing clone DB '{clone_name}' (if any)")
+
+                    conn.execute(text(f"CREATE DATABASE {clone_name}"))
+                    logger.info(f"[Scheduler] Created empty clone DB '{clone_name}'")
             finally:
                 engine.dispose()
+
+            # Phase 2: pg_dump source | psql clone
+            env = os.environ.copy()
+            env["PGPASSWORD"] = self._db_password
+
+            pg_dump_cmd = [
+                "pg_dump",
+                "-h", self._db_host,
+                "-p", str(self._db_port),
+                "-U", self._db_user,
+                "-d", source_db_name,
+                "--no-owner",
+                "--no-privileges",
+                "--no-tablespaces",
+            ]
+
+            # Filter out problematic SET commands that may not be recognized
+            filter_cmd = [
+                "grep",
+                "-v",
+                "-E",
+                "^SET (transaction_timeout|idle_in_transaction_session_timeout)",
+            ]
+
+            psql_cmd = [
+                "psql",
+                "-h", self._db_host,
+                "-p", str(self._db_port),
+                "-U", self._db_user,
+                "-d", clone_name,
+                "-v", "ON_ERROR_STOP=1",
+                "--quiet",
+            ]
+
+            logger.info(
+                f"[Scheduler] Starting pg_dump '{source_db_name}' | grep -v | psql '{clone_name}'"
+            )
+
+            dump_proc = subprocess.Popen(
+                pg_dump_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            filter_proc = subprocess.Popen(
+                filter_cmd,
+                stdin=dump_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            restore_proc = subprocess.Popen(
+                psql_cmd,
+                stdin=filter_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            # Allow proper SIGPIPE propagation
+            if dump_proc.stdout:
+                dump_proc.stdout.close()
+            if filter_proc.stdout:
+                filter_proc.stdout.close()
+
+            try:
+                _, restore_stderr = restore_proc.communicate(timeout=1800)
+                filter_proc.wait(timeout=60)
+                dump_proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                dump_proc.kill()
+                filter_proc.kill()
+                restore_proc.kill()
+                raise RuntimeError("pg_dump|grep|psql pipeline timed out after 30 minutes")
+
+            if dump_proc.returncode != 0:
+                dump_stderr = (
+                    dump_proc.stderr.read().decode("utf-8", errors="replace")
+                    if dump_proc.stderr else "unknown error"
+                )
+                raise RuntimeError(
+                    f"pg_dump failed (rc={dump_proc.returncode}): {dump_stderr}"
+                )
+
+            if filter_proc.returncode not in (0, 1):
+                # grep returns 1 if no lines matched, which is OK
+                filter_stderr = (
+                    filter_proc.stderr.read().decode("utf-8", errors="replace")
+                    if filter_proc.stderr else "unknown error"
+                )
+                raise RuntimeError(
+                    f"grep filter failed (rc={filter_proc.returncode}): {filter_stderr}"
+                )
+
+            if restore_proc.returncode != 0:
+                stderr_text = restore_stderr.decode("utf-8", errors="replace")
+                raise RuntimeError(
+                    f"psql restore failed (rc={restore_proc.returncode}): {stderr_text}"
+                )
+
+            logger.info(
+                f"[Scheduler] Cloned '{source_db_name}' -> '{clone_name}' via pg_dump|psql"
+            )
         finally:
             # Release clone lock if we acquired it
             if clone_lock_acquired:
