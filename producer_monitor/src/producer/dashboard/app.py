@@ -21,6 +21,7 @@ from .admin import (
     start_producer,
     check_rate_limit
 )
+from .scheduler import AutomationScheduler
 from ..queue import RedisQueue
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,8 @@ class NoHealthCheckFilter(logging.Filter):
         if "/api/status" in record.getMessage():
             return False
         if "/api/admin/producer/status" in record.getMessage():
+            return False
+        if "/api/admin/scheduler/status" in record.getMessage():
             return False
         return True
 
@@ -77,9 +80,23 @@ def create_app(config: DashboardConfig) -> Flask:
         except (ValueError, TypeError):
             return value
 
-    # Initialize monitor and health checker
+    # Initialize monitor, health checker, and scheduler
     db_health = DatabaseHealth(config.get_database_url())
     monitor = QueueMonitor(redis_queue, db_health)
+    scheduler = AutomationScheduler(
+        redis_queue=redis_queue,
+        db_health=db_health,
+        producer_mode=config.scheduler_producer_mode,
+        producer_sample_count=config.scheduler_sample_count,
+        poll_interval=config.scheduler_poll_interval,
+        clone_db_name=config.scheduler_clone_db_name,
+        max_wait_time=config.scheduler_max_wait_time,
+        db_host=config.postgres_host,
+        db_port=config.postgres_port,
+        db_user=config.postgres_user,
+        db_password=config.postgres_password,
+        db_name=config.postgres_db,
+    )
 
     @app.route("/")
     def index():  # type: ignore
@@ -125,7 +142,8 @@ def create_app(config: DashboardConfig) -> Flask:
                             "saving_failed": snapshot.saving_failed,
                         },
                         "progress": progress,
-                        "updated_games": snapshot.updated_games
+                        "updated_games": snapshot.updated_games,
+                        "scheduler": scheduler.get_status().to_dict()
                     }
 
                     yield f"data: {json.dumps(data)}\n\n"
@@ -281,6 +299,34 @@ def create_app(config: DashboardConfig) -> Flask:
         except Exception as e:
             logger.error(f"Failed to retry processing jobs: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
+
+    # ========================================
+    # Scheduler Endpoints
+    # ========================================
+
+    @app.route("/api/admin/scheduler/status")
+    def api_scheduler_status():  # type: ignore
+        """Get scheduler status."""
+        status = scheduler.get_status()
+        return jsonify(status.to_dict()), 200
+
+    @app.route("/api/admin/scheduler/start", methods=["POST"])
+    def api_scheduler_start():  # type: ignore
+        """Start the automation scheduler."""
+        success = scheduler.start()
+        if success:
+            return jsonify({"success": True, "message": "Scheduler started"}), 200
+        else:
+            return jsonify({"success": False, "error": "Scheduler is already running"}), 409
+
+    @app.route("/api/admin/scheduler/stop", methods=["POST"])
+    def api_scheduler_stop():  # type: ignore
+        """Stop the automation scheduler."""
+        success = scheduler.stop()
+        if success:
+            return jsonify({"success": True, "message": "Scheduler stopped"}), 200
+        else:
+            return jsonify({"success": False, "error": "Scheduler is not running"}), 409
 
     @app.route("/dlq/crawling")
     def dlq_crawling():  # type: ignore

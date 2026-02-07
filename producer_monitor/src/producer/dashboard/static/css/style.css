@@ -291,6 +291,49 @@ footer {
     color: #7f8c8d;
 }
 
+/* Scheduler Status */
+.scheduler-status {
+    margin-bottom: 1rem;
+    padding: 1rem;
+    background: #ecf0f1;
+    border-radius: 6px;
+}
+
+.scheduler-status .badge {
+    margin-right: 1rem;
+}
+
+.badge.scheduler-idle {
+    background: #e0e0e0;
+    color: #7f8c8d;
+}
+
+.badge.scheduler-waiting_completion,
+.badge.scheduler-waiting_retry_completion {
+    background: #d6eaf8;
+    color: #2980b9;
+}
+
+.badge.scheduler-retrying_failed {
+    background: #fdebd0;
+    color: #e67e22;
+}
+
+.badge.scheduler-cloning_db {
+    background: #d5f5e3;
+    color: #27ae60;
+}
+
+.badge.scheduler-starting_producer {
+    background: #d5f4e6;
+    color: #27ae60;
+}
+
+.badge.scheduler-error {
+    background: #fadbd8;
+    color: #e74c3c;
+}
+
 /* Modals */
 .modal {
     display: none;

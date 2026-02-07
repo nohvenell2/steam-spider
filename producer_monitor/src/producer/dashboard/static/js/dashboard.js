@@ -20,6 +20,9 @@ class Dashboard {
             this.updateProgress(data.progress);
             this.updateUpdatedGames(data.updated_games);
             this.updateLastUpdate();
+            if (data.scheduler) {
+                this.updateScheduler(data.scheduler);
+            }
         };
 
         this.eventSource.onerror = (error) => {
@@ -122,6 +125,51 @@ class Dashboard {
     updateLastUpdate() {
         const now = new Date();
         document.getElementById('last-update').textContent = now.toLocaleTimeString();
+    }
+
+    updateScheduler(scheduler) {
+        const badge = document.getElementById('scheduler-state-badge');
+        const details = document.getElementById('scheduler-details');
+        const errorDiv = document.getElementById('scheduler-error');
+        const btnStart = document.getElementById('btn-scheduler-start');
+        const btnStop = document.getElementById('btn-scheduler-stop');
+
+        if (!badge) return;
+
+        // State badge
+        const stateLabels = {
+            'idle': 'IDLE',
+            'waiting_completion': 'WAITING',
+            'retrying_failed': 'RETRYING',
+            'waiting_retry_completion': 'RETRY WAITING',
+            'cloning_db': 'CLONING DB',
+            'starting_producer': 'STARTING',
+            'error': 'ERROR'
+        };
+        badge.textContent = stateLabels[scheduler.state] || scheduler.state.toUpperCase();
+        badge.className = `badge scheduler-${scheduler.state}`;
+
+        // Details
+        let info = `Cycles: ${scheduler.cycle_count}`;
+        if (scheduler.config) {
+            info += ` | Mode: ${scheduler.config.producer_mode}`;
+            if (scheduler.config.producer_mode === 'test') {
+                info += ` (${scheduler.config.producer_sample_count} samples)`;
+            }
+        }
+        details.textContent = info;
+
+        // Error display
+        if (scheduler.last_error) {
+            errorDiv.textContent = scheduler.last_error;
+            errorDiv.classList.add('show');
+        } else {
+            errorDiv.classList.remove('show');
+        }
+
+        // Button states
+        btnStart.disabled = scheduler.running;
+        btnStop.disabled = !scheduler.running;
     }
 
     formatNumber(num) {
@@ -514,6 +562,59 @@ async function startProducerDirect() {
     }
 }
 
+
+// ========================================
+// Scheduler Controls
+// ========================================
+
+async function startScheduler() {
+    const btn = document.getElementById('btn-scheduler-start');
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+
+    try {
+        const response = await fetch('/api/admin/scheduler/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast(data.message, 'success');
+        } else {
+            showToast(data.error, 'error');
+        }
+    } catch (e) {
+        showToast('Network error', 'error');
+    } finally {
+        btn.textContent = 'Start Scheduler';
+        // Button state will be updated by SSE
+    }
+}
+
+async function stopScheduler() {
+    const btn = document.getElementById('btn-scheduler-stop');
+    btn.disabled = true;
+    btn.textContent = 'Stopping...';
+
+    try {
+        const response = await fetch('/api/admin/scheduler/stop', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast(data.message, 'success');
+        } else {
+            showToast(data.error, 'error');
+        }
+    } catch (e) {
+        showToast('Network error', 'error');
+    } finally {
+        btn.textContent = 'Stop Scheduler';
+        // Button state will be updated by SSE
+    }
+}
 
 // ========================================
 // Producer Status Polling

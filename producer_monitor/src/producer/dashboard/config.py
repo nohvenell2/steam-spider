@@ -41,6 +41,13 @@ class DashboardConfig:
         self.rate_limit_producer_count = self._get_env_int("RATE_LIMIT_PRODUCER_COUNT", 999)
         self.rate_limit_producer_window = self._get_env_int("RATE_LIMIT_PRODUCER_WINDOW", 60)
 
+        # Scheduler configuration
+        self.scheduler_producer_mode = self._get_env("SCHEDULER_PRODUCER_MODE", "test")
+        self.scheduler_sample_count = self._get_env_int("SCHEDULER_SAMPLE_COUNT", 100)
+        self.scheduler_poll_interval = self._get_env_int("SCHEDULER_POLL_INTERVAL", 10)
+        self.scheduler_clone_db_name = self._get_env("SCHEDULER_CLONE_DB_NAME", "steam_games_clone")
+        self.scheduler_max_wait_time = self._get_env_int("SCHEDULER_MAX_WAIT_TIME", 432000)
+
         self._validate()
 
     def _get_env(self, key: str, default: Optional[str] = None) -> str:

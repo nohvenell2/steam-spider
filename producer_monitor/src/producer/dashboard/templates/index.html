@@ -98,6 +98,25 @@
             </button>
         </div>
     </div>
+
+    <!-- Scheduler Section -->
+    <div class="admin-section">
+        <h3>Automation Scheduler</h3>
+        <p class="info-text">Automatically cycles: wait for completion → retry failed → clone DB → reset & start producer → repeat</p>
+        <div class="scheduler-status">
+            <span id="scheduler-state-badge" class="badge">IDLE</span>
+            <span id="scheduler-details"></span>
+        </div>
+        <div id="scheduler-error" class="error-message"></div>
+        <div class="admin-buttons">
+            <button class="btn btn-primary" onclick="startScheduler()" id="btn-scheduler-start">
+                Start Scheduler
+            </button>
+            <button class="btn btn-danger" onclick="stopScheduler()" id="btn-scheduler-stop" disabled>
+                Stop Scheduler
+            </button>
+        </div>
+    </div>
 </section>
 
 <section class="database">
