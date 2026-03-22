@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import tempfile
 import threading
 import time
 import logging
@@ -357,8 +358,13 @@ class AutomationScheduler:
                 f"postgresql://{self._db_user}:{self._db_password}"
                 f"@{self._db_host}:{self._db_port}/postgres"
             )
+            env = os.environ.copy()
+            env["PGPASSWORD"] = self._db_password
 
-            # Phase 1: Drop and recreate empty clone DB
+            # Phase 1: Backup game_embeddings from clone DB (if exists)
+            embeddings_backup = self._backup_embeddings(clone_name, env)
+
+            # Phase 2: Drop and recreate empty clone DB
             engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
             try:
                 with engine.connect() as conn:
@@ -377,110 +383,20 @@ class AutomationScheduler:
             finally:
                 engine.dispose()
 
-            # Phase 2: pg_dump source | psql clone
-            env = os.environ.copy()
-            env["PGPASSWORD"] = self._db_password
+            # Phase 3: pg_dump source | psql clone
+            self._run_pg_dump_pipeline(source_db_name, clone_name, env)
 
-            pg_dump_cmd = [
-                "pg_dump",
-                "-h", self._db_host,
-                "-p", str(self._db_port),
-                "-U", self._db_user,
-                "-d", source_db_name,
-                "--no-owner",
-                "--no-privileges",
-                "--no-tablespaces",
-            ]
-
-            # Filter out problematic SET commands that may not be recognized
-            filter_cmd = [
-                "grep",
-                "-v",
-                "-E",
-                "^SET (transaction_timeout|idle_in_transaction_session_timeout)",
-            ]
-
-            psql_cmd = [
-                "psql",
-                "-h", self._db_host,
-                "-p", str(self._db_port),
-                "-U", self._db_user,
-                "-d", clone_name,
-                "-v", "ON_ERROR_STOP=1",
-                "--quiet",
-            ]
-
-            logger.info(
-                f"[Scheduler] Starting pg_dump '{source_db_name}' | grep -v | psql '{clone_name}'"
-            )
-
-            dump_proc = subprocess.Popen(
-                pg_dump_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-            )
-
-            filter_proc = subprocess.Popen(
-                filter_cmd,
-                stdin=dump_proc.stdout,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-
-            restore_proc = subprocess.Popen(
-                psql_cmd,
-                stdin=filter_proc.stdout,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-            )
-
-            # Allow proper SIGPIPE propagation
-            if dump_proc.stdout:
-                dump_proc.stdout.close()
-            if filter_proc.stdout:
-                filter_proc.stdout.close()
-
-            try:
-                _, restore_stderr = restore_proc.communicate(timeout=1800)
-                filter_proc.wait(timeout=60)
-                dump_proc.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                dump_proc.kill()
-                filter_proc.kill()
-                restore_proc.kill()
-                raise RuntimeError("pg_dump|grep|psql pipeline timed out after 30 minutes")
-
-            if dump_proc.returncode != 0:
-                dump_stderr = (
-                    dump_proc.stderr.read().decode("utf-8", errors="replace")
-                    if dump_proc.stderr else "unknown error"
-                )
-                raise RuntimeError(
-                    f"pg_dump failed (rc={dump_proc.returncode}): {dump_stderr}"
-                )
-
-            if filter_proc.returncode not in (0, 1):
-                # grep returns 1 if no lines matched, which is OK
-                filter_stderr = (
-                    filter_proc.stderr.read().decode("utf-8", errors="replace")
-                    if filter_proc.stderr else "unknown error"
-                )
-                raise RuntimeError(
-                    f"grep filter failed (rc={filter_proc.returncode}): {filter_stderr}"
-                )
-
-            if restore_proc.returncode != 0:
-                stderr_text = restore_stderr.decode("utf-8", errors="replace")
-                raise RuntimeError(
-                    f"psql restore failed (rc={restore_proc.returncode}): {stderr_text}"
-                )
-
-            logger.info(
-                f"[Scheduler] Cloned '{source_db_name}' -> '{clone_name}' via pg_dump|psql"
-            )
+            # Phase 4: Restore game_embeddings backup and prune orphans
+            if embeddings_backup:
+                self._restore_embeddings(clone_name, embeddings_backup, env)
         finally:
+            # Clean up temp file if created
+            if embeddings_backup:
+                try:
+                    os.unlink(embeddings_backup)
+                except OSError:
+                    pass
+
             # Release clone lock if we acquired it
             if clone_lock_acquired:
                 try:
@@ -488,3 +404,235 @@ class AutomationScheduler:
                     logger.info("[Scheduler] Released clone lock")
                 except Exception as e:
                     logger.warning(f"[Scheduler] Could not release clone lock: {e}")
+
+    def _backup_embeddings(self, clone_name: str, env: dict) -> Optional[str]:
+        """Backup game_embeddings table from clone DB to a temp file.
+
+        Returns the temp file path, or None if no backup was made.
+        """
+        # Check if game_embeddings table exists in clone DB
+        clone_url = (
+            f"postgresql://{self._db_user}:{self._db_password}"
+            f"@{self._db_host}:{self._db_port}/{clone_name}"
+        )
+        try:
+            engine = create_engine(clone_url)
+            try:
+                with engine.connect() as conn:
+                    result = conn.execute(text(
+                        "SELECT EXISTS ("
+                        "  SELECT 1 FROM information_schema.tables "
+                        "  WHERE table_name = 'game_embeddings'"
+                        ")"
+                    ))
+                    exists = result.scalar()
+                    if not exists:
+                        logger.info("[Scheduler] No game_embeddings table in clone DB, skipping backup")
+                        return None
+
+                    row_count = conn.execute(text(
+                        "SELECT COUNT(*) FROM game_embeddings"
+                    )).scalar()
+                    if row_count == 0:
+                        logger.info("[Scheduler] game_embeddings is empty, skipping backup")
+                        return None
+            finally:
+                engine.dispose()
+        except Exception as e:
+            logger.warning(f"[Scheduler] Could not check game_embeddings in clone: {e}")
+            return None
+
+        # pg_dump only the game_embeddings table (with pgvector extension)
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sql", prefix="embeddings_backup_")
+        os.close(tmp_fd)
+
+        dump_cmd = [
+            "pg_dump",
+            "-h", self._db_host,
+            "-p", str(self._db_port),
+            "-U", self._db_user,
+            "-d", clone_name,
+            "-t", "game_embeddings",
+            "--no-owner",
+            "--no-privileges",
+            "--no-tablespaces",
+            "-f", tmp_path,
+        ]
+
+        try:
+            result = subprocess.run(
+                dump_cmd, capture_output=True, text=True, env=env, timeout=600
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    f"[Scheduler] game_embeddings backup failed: {result.stderr}"
+                )
+                os.unlink(tmp_path)
+                return None
+        except Exception as e:
+            logger.warning(f"[Scheduler] game_embeddings backup error: {e}")
+            os.unlink(tmp_path)
+            return None
+
+        logger.info(
+            f"[Scheduler] Backed up game_embeddings ({row_count} rows) from '{clone_name}'"
+        )
+        return tmp_path
+
+    def _run_pg_dump_pipeline(
+        self, source_db_name: str, clone_name: str, env: dict
+    ) -> None:
+        """Run pg_dump source | grep filter | psql clone pipeline."""
+        pg_dump_cmd = [
+            "pg_dump",
+            "-h", self._db_host,
+            "-p", str(self._db_port),
+            "-U", self._db_user,
+            "-d", source_db_name,
+            "--no-owner",
+            "--no-privileges",
+            "--no-tablespaces",
+        ]
+
+        # Filter out problematic SET commands that may not be recognized
+        filter_cmd = [
+            "grep",
+            "-v",
+            "-E",
+            "^SET (transaction_timeout|idle_in_transaction_session_timeout)",
+        ]
+
+        psql_cmd = [
+            "psql",
+            "-h", self._db_host,
+            "-p", str(self._db_port),
+            "-U", self._db_user,
+            "-d", clone_name,
+            "-v", "ON_ERROR_STOP=1",
+            "--quiet",
+        ]
+
+        logger.info(
+            f"[Scheduler] Starting pg_dump '{source_db_name}' | grep -v | psql '{clone_name}'"
+        )
+
+        dump_proc = subprocess.Popen(
+            pg_dump_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+
+        filter_proc = subprocess.Popen(
+            filter_cmd,
+            stdin=dump_proc.stdout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        restore_proc = subprocess.Popen(
+            psql_cmd,
+            stdin=filter_proc.stdout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+
+        # Allow proper SIGPIPE propagation
+        if dump_proc.stdout:
+            dump_proc.stdout.close()
+        if filter_proc.stdout:
+            filter_proc.stdout.close()
+
+        try:
+            _, restore_stderr = restore_proc.communicate(timeout=1800)
+            filter_proc.wait(timeout=60)
+            dump_proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            dump_proc.kill()
+            filter_proc.kill()
+            restore_proc.kill()
+            raise RuntimeError("pg_dump|grep|psql pipeline timed out after 30 minutes")
+
+        if dump_proc.returncode != 0:
+            dump_stderr = (
+                dump_proc.stderr.read().decode("utf-8", errors="replace")
+                if dump_proc.stderr else "unknown error"
+            )
+            raise RuntimeError(
+                f"pg_dump failed (rc={dump_proc.returncode}): {dump_stderr}"
+            )
+
+        if filter_proc.returncode not in (0, 1):
+            # grep returns 1 if no lines matched, which is OK
+            filter_stderr = (
+                filter_proc.stderr.read().decode("utf-8", errors="replace")
+                if filter_proc.stderr else "unknown error"
+            )
+            raise RuntimeError(
+                f"grep filter failed (rc={filter_proc.returncode}): {filter_stderr}"
+            )
+
+        if restore_proc.returncode != 0:
+            stderr_text = restore_stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"psql restore failed (rc={restore_proc.returncode}): {stderr_text}"
+            )
+
+        logger.info(
+            f"[Scheduler] Cloned '{source_db_name}' -> '{clone_name}' via pg_dump|psql"
+        )
+
+    def _restore_embeddings(
+        self, clone_name: str, backup_path: str, env: dict
+    ) -> None:
+        """Restore game_embeddings from backup, then prune orphaned rows."""
+        logger.info(f"[Scheduler] Restoring game_embeddings into '{clone_name}'")
+
+        psql_cmd = [
+            "psql",
+            "-h", self._db_host,
+            "-p", str(self._db_port),
+            "-U", self._db_user,
+            "-d", clone_name,
+            "-v", "ON_ERROR_STOP=1",
+            "--quiet",
+            "-f", backup_path,
+        ]
+
+        try:
+            result = subprocess.run(
+                psql_cmd, capture_output=True, text=True, env=env, timeout=600
+            )
+            if result.returncode != 0:
+                logger.error(
+                    f"[Scheduler] game_embeddings restore failed: {result.stderr}"
+                )
+                raise RuntimeError(
+                    f"game_embeddings restore failed (rc={result.returncode}): "
+                    f"{result.stderr}"
+                )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("game_embeddings restore timed out after 10 minutes")
+
+        logger.info("[Scheduler] game_embeddings restored, pruning orphaned rows")
+
+        # Delete embeddings whose game_id no longer exists in basic_info
+        clone_url = (
+            f"postgresql://{self._db_user}:{self._db_password}"
+            f"@{self._db_host}:{self._db_port}/{clone_name}"
+        )
+        engine = create_engine(clone_url)
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(
+                    "DELETE FROM game_embeddings "
+                    "WHERE game_id NOT IN (SELECT game_id FROM basic_info)"
+                ))
+                pruned = result.rowcount
+                conn.commit()
+                logger.info(
+                    f"[Scheduler] Pruned {pruned} orphaned rows from game_embeddings"
+                )
+        finally:
+            engine.dispose()
