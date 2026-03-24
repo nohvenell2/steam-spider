@@ -456,19 +456,47 @@ class AutomationScheduler:
             "--no-owner",
             "--no-privileges",
             "--no-tablespaces",
-            "-f", tmp_path,
+        ]
+
+        filter_cmd = [
+            "grep",
+            "-v",
+            "-E",
+            "^SET (transaction_timeout|idle_in_transaction_session_timeout)",
         ]
 
         try:
-            result = subprocess.run(
-                dump_cmd, capture_output=True, text=True, env=env, timeout=600
+            dump_proc = subprocess.Popen(
+                dump_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
             )
-            if result.returncode != 0:
+            filter_proc = subprocess.Popen(
+                filter_cmd,
+                stdin=dump_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if dump_proc.stdout:
+                dump_proc.stdout.close()
+
+            filtered_output, _ = filter_proc.communicate(timeout=600)
+            dump_proc.wait(timeout=60)
+
+            if dump_proc.returncode != 0:
+                dump_stderr = (
+                    dump_proc.stderr.read().decode("utf-8", errors="replace")
+                    if dump_proc.stderr else "unknown error"
+                )
                 logger.warning(
-                    f"[Scheduler] game_embeddings backup failed: {result.stderr}"
+                    f"[Scheduler] game_embeddings backup failed: {dump_stderr}"
                 )
                 os.unlink(tmp_path)
                 return None
+
+            with open(tmp_path, "wb") as f:
+                f.write(filtered_output)
         except Exception as e:
             logger.warning(f"[Scheduler] game_embeddings backup error: {e}")
             os.unlink(tmp_path)
